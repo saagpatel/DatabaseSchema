@@ -159,11 +159,12 @@ pub async fn update_connection(
     }
 
     // Disconnect stale pool if connection details changed
-    {
+    let old_pool = {
         let mut pg_pools = state.pg_pools.lock().await;
-        if let Some(old_pool) = pg_pools.remove(&id) {
-            old_pool.close().await;
-        }
+        pg_pools.remove(&id)
+    };
+    if let Some(pool) = old_pool {
+        pool.close().await;
     }
 
     // Fetch the actual created_at from the database
@@ -198,12 +199,13 @@ pub async fn delete_connection(
     id: String,
     state: State<'_, AppState>,
 ) -> Result<(), AppError> {
-    // Disconnect if connected
-    {
+    // Disconnect if connected — remove from mutex first, close outside the lock
+    let old_pool = {
         let mut pg_pools = state.pg_pools.lock().await;
-        if let Some(pool) = pg_pools.remove(&id) {
-            pool.close().await;
-        }
+        pg_pools.remove(&id)
+    };
+    if let Some(pool) = old_pool {
+        pool.close().await;
     }
 
     let result = sqlx::query("DELETE FROM connections WHERE id = ?")
@@ -264,12 +266,16 @@ pub async fn connect(
     // Verify connection is alive
     sqlx::query("SELECT 1").execute(&pool).await?;
 
-    // Close old pool if reconnecting
-    let mut pg_pools = state.pg_pools.lock().await;
-    if let Some(old_pool) = pg_pools.remove(&id) {
-        old_pool.close().await;
+    // Swap pool atomically (remove old + insert new), then close old outside the lock
+    let old_pool = {
+        let mut pg_pools = state.pg_pools.lock().await;
+        let old = pg_pools.remove(&id);
+        pg_pools.insert(id, pool);
+        old
+    };
+    if let Some(old) = old_pool {
+        old.close().await;
     }
-    pg_pools.insert(id, pool);
 
     Ok(())
 }
@@ -279,9 +285,12 @@ pub async fn disconnect(
     id: String,
     state: State<'_, AppState>,
 ) -> Result<(), AppError> {
-    let mut pg_pools = state.pg_pools.lock().await;
+    let pool = {
+        let mut pg_pools = state.pg_pools.lock().await;
+        pg_pools.remove(&id)
+    };
 
-    if let Some(pool) = pg_pools.remove(&id) {
+    if let Some(pool) = pool {
         pool.close().await;
         Ok(())
     } else {

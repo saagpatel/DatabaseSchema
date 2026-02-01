@@ -26,7 +26,7 @@ pub async fn execute_query(
         };
 
         // Wrap in subquery to safely apply LIMIT without false-positive detection
-        let effective_sql = if let Some(lim) = limit {
+        let effective_sql = if let Some(lim) = limit.filter(|&l| l > 0) {
             format!(
                 "SELECT * FROM ({}) _limited LIMIT {}",
                 sql.trim().trim_end_matches(';'),

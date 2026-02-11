@@ -11,15 +11,22 @@ import { SettingsView } from "@/components/settings/SettingsView";
 import { useConnections } from "@/hooks/useConnections";
 import { useSettings } from "@/hooks/useSettings";
 import { useTheme } from "@/hooks/useTheme";
+import { useSchema } from "@/hooks/useSchema";
 import type { View } from "@/components/common/Sidebar";
 
 function AppContent({ view }: { view: View }) {
   const { connections, activeId, loadConnections } = useConnections();
+  const { selectedSchema, ensureSchemaReady } = useSchema();
   const activeConnection = connections.find((c) => c.id === activeId);
 
   useEffect(() => {
     loadConnections();
   }, [loadConnections]);
+
+  useEffect(() => {
+    if (!activeId || !activeConnection?.isConnected) return;
+    ensureSchemaReady(activeId, selectedSchema ?? undefined);
+  }, [activeId, activeConnection?.isConnected, selectedSchema, ensureSchemaReady]);
 
   if (view === "settings") {
     return <SettingsView />;

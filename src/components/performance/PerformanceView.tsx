@@ -8,6 +8,7 @@ import { IndexStatsPanel } from "./IndexStatsPanel";
 import { usePerformance } from "@/hooks/usePerformance";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useSchemaStore } from "@/stores/schemaStore";
+import { useSchema } from "@/hooks/useSchema";
 import { useMonacoTheme } from "@/hooks/useTheme";
 import { showToast } from "@/components/common/Toast";
 
@@ -22,8 +23,8 @@ export function PerformanceView() {
   const activeConnection = connections.find((c) => c.id === activeId);
 
   const schemas = useSchemaStore((s) => s.schemas);
+  const { selectedSchema, setSelectedSchema, ensureSchemaReady } = useSchema();
   const monacoTheme = useMonacoTheme();
-  const [selectedSchema, setSelectedSchema] = useState("public");
 
   const {
     planNode,
@@ -38,6 +39,13 @@ export function PerformanceView() {
     loadIndexStats,
   } = usePerformance();
 
+  // Ensure schema list is available even if user opens Performance first
+  useEffect(() => {
+    if (activeId && activeConnection?.isConnected) {
+      ensureSchemaReady(activeId, selectedSchema ?? undefined);
+    }
+  }, [activeId, activeConnection?.isConnected, selectedSchema, ensureSchemaReady]);
+
   // Reset SQL when connection changes
   useEffect(() => {
     setSql("");
@@ -46,8 +54,9 @@ export function PerformanceView() {
   // Load stats when connection or schema changes
   useEffect(() => {
     if (activeId && activeConnection?.isConnected) {
-      loadTableStats(activeId, selectedSchema);
-      loadIndexStats(activeId, selectedSchema);
+      const schema = selectedSchema ?? "public";
+      loadTableStats(activeId, schema);
+      loadIndexStats(activeId, schema);
     }
   }, [
     activeId,
@@ -76,8 +85,9 @@ export function PerformanceView() {
 
   const handleRefreshStats = useCallback(() => {
     if (!activeId || !activeConnection?.isConnected) return;
-    loadTableStats(activeId, selectedSchema);
-    loadIndexStats(activeId, selectedSchema);
+    const schema = selectedSchema ?? "public";
+    loadTableStats(activeId, schema);
+    loadIndexStats(activeId, schema);
   }, [
     activeId,
     activeConnection,
@@ -136,7 +146,7 @@ export function PerformanceView() {
         {(activeTab === "tables" || activeTab === "indexes") && (
           <>
             <select
-              value={selectedSchema}
+              value={selectedSchema ?? "public"}
               onChange={(e) => setSelectedSchema(e.target.value)}
               className="px-2 py-1 text-xs bg-bg-primary border border-border rounded-md text-text-primary"
             >

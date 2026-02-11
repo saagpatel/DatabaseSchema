@@ -20,6 +20,7 @@ import { SchemaToolbar } from "./SchemaToolbar";
 import { useSchema } from "@/hooks/useSchema";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { useSettings } from "@/hooks/useSettings";
 import { applyDagreLayout, applyForceLayout } from "@/utils/layout";
 import type { SchemaInfo } from "@/types/schema";
 import { showToast } from "@/components/common/Toast";
@@ -109,7 +110,11 @@ function SchemaFlowInner() {
   const { fitView } = useReactFlow();
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
-  const [layout, setLayout] = useState<"dagre" | "force">("dagre");
+  const settings = useSettingsStore((s) => s.settings);
+  const { saveSettings } = useSettings();
+  const [layout, setLayout] = useState<"dagre" | "force">(() =>
+    settings?.graphLayout === "force" ? "force" : "dagre"
+  );
   const layoutApplied = useRef(false);
 
   const {
@@ -121,8 +126,6 @@ function SchemaFlowInner() {
     searchQuery,
     setSelectedSchema,
     setSearchQuery,
-    loadSchemas,
-    loadSchema,
     refreshSchema,
   } = useSchema();
 
@@ -130,23 +133,15 @@ function SchemaFlowInner() {
   const activeId = useConnectionStore((s) => s.activeId);
   const activeConnection = connections.find((c) => c.id === activeId);
 
-  const settings = useSettingsStore((s) => s.settings);
   const showColumns = settings?.graphShowColumns !== "false";
   const showTypes = settings?.graphShowTypes !== "false";
 
-  // Load schemas when connection changes
   useEffect(() => {
-    if (activeId && activeConnection?.isConnected) {
-      loadSchemas(activeId);
+    if (settings?.graphLayout === "force" || settings?.graphLayout === "dagre") {
+      setLayout(settings.graphLayout);
     }
-  }, [activeId, activeConnection?.isConnected, loadSchemas]);
+  }, [settings?.graphLayout]);
 
-  // Load schema data when selected schema changes
-  useEffect(() => {
-    if (activeId && selectedSchema && activeConnection?.isConnected) {
-      loadSchema(activeId, selectedSchema);
-    }
-  }, [activeId, selectedSchema, activeConnection?.isConnected, loadSchema]);
 
   // Build nodes/edges when schema info or filters change
   const { builtNodes, builtEdges } = useMemo(() => {
@@ -208,10 +203,16 @@ function SchemaFlowInner() {
   }, [fitView]);
 
   const handleLayoutChange = useCallback(
-    (newLayout: "dagre" | "force") => {
+    async (newLayout: "dagre" | "force") => {
       setLayout(newLayout);
+      if (!settings) return;
+      try {
+        await saveSettings({ ...settings, graphLayout: newLayout });
+      } catch {
+        // Ignore persistence errors; in-memory layout is still applied
+      }
     },
-    []
+    [settings, saveSettings]
   );
 
   // Not connected state

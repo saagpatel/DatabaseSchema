@@ -10,6 +10,7 @@ import { useQueryStore } from "@/stores/queryStore";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useSchemaStore } from "@/stores/schemaStore";
+import { useSchema } from "@/hooks/useSchema";
 import { useMonacoTheme } from "@/hooks/useTheme";
 import { showToast } from "@/components/common/Toast";
 
@@ -38,6 +39,7 @@ export function QueryView() {
 
   const settings = useSettingsStore((s) => s.settings);
   const schemaInfo = useSchemaStore((s) => s.schemaInfo);
+  const { selectedSchema, ensureSchemaReady } = useSchema();
   const monacoTheme = useMonacoTheme();
 
   const fontSize = settings?.editorFontSize
@@ -59,6 +61,13 @@ export function QueryView() {
   useEffect(() => {
     schemaInfoRef.current = schemaInfo;
   }, [schemaInfo]);
+
+  // Ensure schema is available for autocomplete even if user never opened Schema view
+  useEffect(() => {
+    if (activeId && activeConnection?.isConnected) {
+      ensureSchemaReady(activeId, selectedSchema ?? undefined);
+    }
+  }, [activeId, activeConnection?.isConnected, selectedSchema, ensureSchemaReady]);
 
   // Load history when connection changes
   useEffect(() => {

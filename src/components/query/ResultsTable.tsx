@@ -47,7 +47,7 @@ export function ResultsTable({ result }: ResultsTableProps) {
       {/* Status bar */}
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-border bg-bg-secondary text-xs text-text-muted">
         <span>
-          {result.rowCount} row{result.rowCount !== 1 ? "s" : ""} returned
+          {result.rowCount} row{result.rowCount !== 1 ? "s" : ""}
         </span>
         <span>{result.executionTimeMs}ms</span>
       </div>

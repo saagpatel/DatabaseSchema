@@ -5,9 +5,27 @@ import { resolve } from "path";
 export default defineConfig({
   plugins: [react()],
   test: {
+    globals: true,
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
-    globals: true,
+    include: [
+      "src/**/*.test.ts",
+      "src/**/*.test.tsx",
+      "tests/e2e/**/*.spec.ts"
+    ],
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "json", "html"],
+      exclude: [
+        "node_modules/",
+        "src/test/",
+        "**/*.test.ts",
+        "**/*.test.tsx",
+        "**/*.spec.ts",
+        "src-tauri/"
+      ]
+    },
+    testTimeout: 30000
   },
   resolve: {
     alias: {

@@ -30,7 +30,7 @@ A production-grade PostgreSQL IDE for schema exploration, SQL development, and q
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/DatabaseSchemaVisualizer.git
+git clone https://github.com/saagar210/DatabaseSchemaVisualizer.git
 cd DatabaseSchemaVisualizer
 
 # Install dependencies

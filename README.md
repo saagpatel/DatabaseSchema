@@ -39,9 +39,47 @@ npm install
 # Run in development mode
 npm run tauri dev
 
+# Run in low-disk lean development mode
+npm run dev:lean
+
 # Build for production
 npm run tauri build
 ```
+
+### Normal Dev vs Lean Dev
+
+- **Normal dev (`npm run tauri dev`)**
+  - Fastest repeated startup once Rust and frontend caches are warm.
+  - Uses persistent local build artifacts (for example `src-tauri/target`, Vite cache in `node_modules/.vite`).
+- **Lean dev (`npm run dev:lean`)**
+  - Runs the same Tauri dev flow, but moves heavy build caches to temporary locations.
+  - Automatically removes heavy build artifacts when you exit.
+  - Uses less persistent disk space, but startup/rebuild can be slower.
+
+### Cleanup Commands
+
+- **Targeted heavy cleanup** (keeps dependencies for speed):
+
+```bash
+npm run clean:heavy
+```
+
+Removes only heavy build artifacts:
+- `dist`
+- `src-tauri/target`
+- `node_modules/.vite`
+
+- **Full local reproducible cleanup** (maximum space recovery):
+
+```bash
+npm run clean:full
+```
+
+Removes:
+- `dist`
+- `src-tauri/target`
+- `node_modules/.vite`
+- `node_modules` (recreated by `npm install`)
 
 ### First Connection
 

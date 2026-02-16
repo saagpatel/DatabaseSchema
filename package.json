@@ -5,12 +5,15 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:lean": "./scripts/lean-dev.sh",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "lint": "tsc --noEmit",
     "lint:fix": "eslint . --fix && prettier --write .",
     "format": "prettier --write .",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "clean:heavy": "./scripts/cleanup-heavy.sh",
+    "clean:full": "./scripts/cleanup-full.sh"
   },
   "dependencies": {
     "@dagrejs/dagre": "^2.0.3",

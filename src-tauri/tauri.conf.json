@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.dbviz.app",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm run dev -- --port ${TAURI_DEV_PORT:-1420}",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"

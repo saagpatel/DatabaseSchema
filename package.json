@@ -36,7 +36,7 @@
     "lint-staged": "lint-staged"
   },
   "dependencies": {
-    "@dagrejs/dagre": "^2.0.4",
+    "@dagrejs/dagre": "^3.0.0",
     "@monaco-editor/react": "^4.7.0",
     "@tauri-apps/api": "^2.11.0",
     "@xyflow/react": "^12.11.0",

@@ -18,6 +18,10 @@ jobs:
         if: contains(steps.changed.outputs.all_changed_files, 'pnpm-lock.yaml') || contains(steps.changed.outputs.all_changed_files, 'package-lock.json') || contains(steps.changed.outputs.all_changed_files, 'yarn.lock')
         with:
           script: |
+            if (context.payload.pull_request?.user?.login === "dependabot[bot]") {
+              core.info("Skipping lockfile rationale for Dependabot dependency updates.");
+              return;
+            }
             const body = (context.payload.pull_request?.body || "");
             if (!/## Lockfile rationale/i.test(body)) {
               core.setFailed("Lockfile changed but PR body lacks 'Lockfile rationale' section.");

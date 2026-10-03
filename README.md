@@ -2,18 +2,18 @@
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-3178c6?style=flat-square&logo=typescript)](#) [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](#)
 
-> A PostgreSQL IDE that explains your schema, optimizes your queries, and never sends data to the cloud.
+> A PostgreSQL IDE that explains your schema, optimizes your queries, and uses Ollama at a configurable endpoint (localhost by default).
 
-A production-grade PostgreSQL IDE for schema exploration, SQL development, and query optimization. Entity-relationship diagrams with React Flow, a Monaco editor with live schema autocomplete, visual EXPLAIN plan trees, and AI-powered index suggestions via local Ollama — all in a lightweight Tauri native desktop app.
+A production-grade PostgreSQL IDE for schema exploration, SQL development, and query optimization. Entity-relationship diagrams with React Flow, a Monaco editor with live schema autocomplete, visual EXPLAIN plan trees, and AI-powered index suggestions via Ollama (localhost by default) — all in a lightweight Tauri native desktop app.
 
 ## Features
 
-- **Interactive ER diagrams** — React Flow + Dagre layout with click-to-explore relationships
+- **Interactive ER diagrams** — React Flow + Dagre layout with selectable tables and labeled foreign-key relationships
 - **SQL editor** — Monaco with autocomplete sourced from live schema introspection
 - **EXPLAIN plan analysis** — visual tree display with performance warnings highlighted
-- **AI optimization** — query optimization, index suggestions, and schema review via local Ollama (no cloud)
+- **AI optimization** — query optimization, index suggestions, and schema review via Ollama at the configured endpoint (localhost by default)
 - **Encrypted connections** — AES-256-GCM credential storage with PostgreSQL SSL support
-- **Query history** — 50-item history with execution timing and error tracking
+- **Query history** — latest 50 successful queries with execution timing
 - **Performance metrics** — table and index statistics from pg_stat views
 
 ## Quick Start
@@ -48,15 +48,15 @@ For frontend-only development, use `pnpm dev`; browser previews do not provide T
 
 ## Tech Stack
 
-| Layer              | Technology          |
-| ------------------ | ------------------- |
-| Desktop runtime    | Tauri (Rust)        |
-| Frontend           | React + TypeScript  |
-| SQL editor         | Monaco Editor       |
-| ER diagrams        | React Flow + Dagre  |
-| AI features        | Ollama (local)      |
-| PostgreSQL driver  | Rust postgres crate |
-| Credential storage | AES-256-GCM         |
+| Layer              | Technology                     |
+| ------------------ | ------------------------------ |
+| Desktop runtime    | Tauri (Rust)                   |
+| Frontend           | React + TypeScript             |
+| SQL editor         | Monaco Editor                  |
+| ER diagrams        | React Flow + Dagre             |
+| AI features        | Ollama (configurable endpoint) |
+| PostgreSQL driver  | SQLx (PostgreSQL)              |
+| Credential storage | AES-256-GCM                    |
 
 ## License
 

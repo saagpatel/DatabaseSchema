@@ -13,7 +13,7 @@ A production-grade PostgreSQL IDE for schema exploration, SQL development, and q
 - **EXPLAIN plan analysis** — visual tree display with performance warnings highlighted
 - **AI optimization** — query optimization, index suggestions, and schema review via Ollama at the configured endpoint (localhost by default)
 - **Encrypted connections** — AES-256-GCM credential storage with PostgreSQL SSL support
-- **Query history** — latest 50 successful queries with execution timing
+- **Query history** — latest 50 recorded queries with execution timing; history storage and UI support failed queries with error messages. Known gap: SQL execution errors currently return early (`?` in `execute_query`) before being saved, so failures do not appear.
 - **Performance metrics** — table and index statistics from pg_stat views
 
 ## Quick Start

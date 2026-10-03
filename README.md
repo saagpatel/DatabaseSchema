@@ -20,7 +20,7 @@ A production-grade PostgreSQL IDE for schema exploration, SQL development, and q
 
 ### Prerequisites
 
-- Node.js 20.19+ on the 20.x line, or 22.12+, with npm. These satisfy the locked Vite engine; CI uses Node 20.
+- Node.js 22.22.1+ with npm for the full developer workflow, including the locked `lint-staged` hook tooling. Vite itself supports Node 20.19+ on the 20.x line or 22.12+; the existing frontend CI lane uses Node 20 and does not establish compatibility for the full local hook workflow.
 - pnpm 10.28.1, matching CI and the committed `pnpm-lock.yaml`.
 - For Rust tests and the desktop app: Rust stable and the [Tauri 2 platform prerequisites](https://v2.tauri.app/start/prerequisites/). macOS desktop development needs Xcode Command Line Tools.
 - PostgreSQL 12+ is needed only for connected database features. [Ollama](https://ollama.com/) is optional for AI features. Local typechecking, frontend builds, and fixture tests need neither service.

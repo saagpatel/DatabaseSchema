@@ -24,7 +24,7 @@ See the README for installation and setup instructions.
 
 ## Verification
 
-Run commands from the repository root after the [locked installation](README.md#installation). Use pnpm 10.28.1: the performance build script runs pnpm's JavaScript entry point through Node. Rust commands also need the native Tauri prerequisites linked in the README.
+Run commands from the repository root after the [locked installation](README.md#installation). Use Node 22.22.1+ for the full workflow: locked `lint-staged` requires it, while `@commitlint/cli` requires Node 22.12+. The existing Node 20 frontend CI lane is a narrower build/verification lane. Use pnpm 10.28.1: the performance build script runs pnpm's JavaScript entry point through Node. Rust commands also need the native Tauri prerequisites linked in the README.
 
 ### Frontend and documentation
 

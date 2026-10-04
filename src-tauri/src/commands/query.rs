@@ -1,4 +1,5 @@
 use sqlx::postgres::PgRow;
+use sqlx::SqlitePool;
 use sqlx::{Column, Row};
 use std::time::Instant;
 use tauri::State;
@@ -23,72 +24,94 @@ pub async fn execute_query(
     let start = Instant::now();
     let query_mode = determine_query_mode(&sql);
 
-    let result = {
-        let pool = {
-            let pg_pools = state.pg_pools.lock().await;
-            pg_pools
-                .get(&connection_id)
-                .cloned()
-                .ok_or_else(|| AppError::NotConnected(connection_id.clone()))?
-        };
+    // Not being connected is not a query execution, so it is not recorded.
+    let pool = {
+        let pg_pools = state.pg_pools.lock().await;
+        pg_pools
+            .get(&connection_id)
+            .cloned()
+            .ok_or_else(|| AppError::NotConnected(connection_id.clone()))?
+    };
 
-        if query_mode == QueryMode::ReturnsRows {
-            let effective_sql = apply_select_limit(&sql, limit);
-            let rows = sqlx::query(&effective_sql).fetch_all(&pool).await?;
-            let (columns, json_rows) = pg_rows_to_json(&rows);
-            let row_count = json_rows.len();
-            Ok::<(Vec<String>, Vec<serde_json::Value>, usize), sqlx::Error>((
-                columns, json_rows, row_count,
-            ))
-        } else {
-            let command = sqlx::query(&sql).execute(&pool).await?;
-            Ok((
+    // SQL errors must reach the history write below, so no `?` in here.
+    let result: Result<QueryRows, sqlx::Error> = if query_mode == QueryMode::ReturnsRows {
+        let effective_sql = apply_select_limit(&sql, limit);
+        sqlx::query(&effective_sql)
+            .fetch_all(&pool)
+            .await
+            .map(|rows| {
+                let (columns, json_rows) = pg_rows_to_json(&rows);
+                let row_count = json_rows.len();
+                (columns, json_rows, row_count)
+            })
+    } else {
+        sqlx::query(&sql).execute(&pool).await.map(|command| {
+            (
                 vec![],
                 vec![],
                 usize::try_from(command.rows_affected()).unwrap_or(usize::MAX),
-            ))
-        }
+            )
+        })
     };
 
     let elapsed = start.elapsed().as_millis() as u64;
+    record_and_finish(&state.local_db, &connection_id, &sql, elapsed, result).await
+}
+
+type QueryRows = (Vec<String>, Vec<serde_json::Value>, usize);
+
+/// Records an executed query in history, successful or not, then converts the
+/// outcome into the command's response.
+async fn record_and_finish(
+    local_db: &SqlitePool,
+    connection_id: &str,
+    sql: &str,
+    elapsed_ms: u64,
+    result: Result<QueryRows, sqlx::Error>,
+) -> Result<QueryResult, AppError> {
+    let entry = history_entry_for(result.as_ref().map(|(_, _, row_count)| *row_count));
+    save_history(
+        local_db,
+        connection_id,
+        sql,
+        i64::try_from(elapsed_ms).unwrap_or(i64::MAX),
+        entry.row_count,
+        entry.status,
+        entry.error_message.as_deref(),
+    )
+    .await;
 
     match result {
-        Ok((columns, json_rows, row_count)) => {
-            // Save to history
-            save_history(
-                &state,
-                &connection_id,
-                &sql,
-                elapsed as i64,
-                row_count as i64,
-                "success",
-                None,
-            )
-            .await;
+        Ok((columns, rows, row_count)) => Ok(QueryResult {
+            columns,
+            rows,
+            row_count,
+            execution_time_ms: elapsed_ms,
+        }),
+        Err(e) => Err(AppError::Database(e)),
+    }
+}
 
-            Ok(QueryResult {
-                columns,
-                rows: json_rows,
-                row_count,
-                execution_time_ms: elapsed,
-            })
-        }
-        Err(e) => {
-            let err_msg = e.to_string();
+/// What a query execution records in history.
+#[derive(Debug, PartialEq, Eq)]
+struct HistoryEntryFields {
+    row_count: i64,
+    status: &'static str,
+    error_message: Option<String>,
+}
 
-            save_history(
-                &state,
-                &connection_id,
-                &sql,
-                elapsed as i64,
-                0,
-                "error",
-                Some(&err_msg),
-            )
-            .await;
-
-            Err(AppError::Database(e))
-        }
+fn history_entry_for(result: Result<usize, &sqlx::Error>) -> HistoryEntryFields {
+    match result {
+        Ok(row_count) => HistoryEntryFields {
+            row_count: i64::try_from(row_count).unwrap_or(i64::MAX),
+            status: "success",
+            error_message: None,
+        },
+        Err(e) => HistoryEntryFields {
+            row_count: 0,
+            status: "error",
+            error_message: Some(e.to_string()),
+        },
     }
 }
 
@@ -369,7 +392,7 @@ fn extract_pg_value(row: &PgRow, col: &sqlx::postgres::PgColumn) -> serde_json::
 }
 
 async fn save_history(
-    state: &AppState,
+    local_db: &SqlitePool,
     connection_id: &str,
     sql: &str,
     execution_time_ms: i64,
@@ -389,7 +412,7 @@ async fn save_history(
     .bind(row_count)
     .bind(status)
     .bind(error_message)
-    .execute(&state.local_db)
+    .execute(local_db)
     .await
     {
         eprintln!("Failed to save query history: {e}");
@@ -398,7 +421,11 @@ async fn save_history(
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_select_limit, determine_query_mode, normalize_for_prefix, QueryMode};
+    use super::{
+        apply_select_limit, determine_query_mode, history_entry_for, normalize_for_prefix,
+        record_and_finish, HistoryEntryFields, QueryMode,
+    };
+    use crate::error::AppError;
 
     #[test]
     fn test_limit_wrapping_format() {
@@ -489,5 +516,87 @@ mod tests {
 
         let fallback = serde_json::Value::String(inf_val.to_string());
         assert_eq!(fallback.as_str().unwrap(), "inf");
+    }
+
+    #[test]
+    fn history_records_a_successful_query() {
+        assert_eq!(
+            history_entry_for(Ok(3)),
+            HistoryEntryFields {
+                row_count: 3,
+                status: "success",
+                error_message: None,
+            }
+        );
+    }
+
+    #[test]
+    fn history_row_count_saturates_instead_of_wrapping() {
+        assert_eq!(history_entry_for(Ok(usize::MAX)).row_count, i64::MAX);
+    }
+
+    async fn local_db_with_connection() -> (tempfile::TempDir, sqlx::SqlitePool) {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::db::local::init_local_db(&dir.path().join("test.db"))
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO connections (id, name, host, port, database, username, password)
+             VALUES ('conn-1', 'test', 'localhost', '5432', 'db', 'user', 'secret')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        (dir, pool)
+    }
+
+    async fn history_rows(pool: &sqlx::SqlitePool) -> Vec<(String, i64, String, Option<String>)> {
+        sqlx::query_as(
+            "SELECT sql_text, row_count, status, error_message FROM query_history ORDER BY created_at",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn failed_query_is_recorded_and_returned_as_an_error() {
+        let (_dir, pool) = local_db_with_connection().await;
+        let failure = sqlx::Error::Protocol("relation \"missing\" does not exist".to_string());
+
+        let response =
+            record_and_finish(&pool, "conn-1", "SELECT * FROM missing", 7, Err(failure)).await;
+
+        assert!(matches!(response, Err(AppError::Database(_))));
+        let rows = history_rows(&pool).await;
+        assert_eq!(rows.len(), 1);
+        let (sql, row_count, status, message) = &rows[0];
+        assert_eq!(sql, "SELECT * FROM missing");
+        assert_eq!(*row_count, 0);
+        assert_eq!(status, "error");
+        assert!(message
+            .as_deref()
+            .is_some_and(|m| m.contains("relation \"missing\" does not exist")));
+    }
+
+    #[tokio::test]
+    async fn successful_query_is_recorded_and_returned() {
+        let (_dir, pool) = local_db_with_connection().await;
+        let rows = (
+            vec!["id".to_string()],
+            vec![serde_json::json!({ "id": 1 })],
+            1,
+        );
+
+        let response = record_and_finish(&pool, "conn-1", "SELECT 1", 3, Ok(rows))
+            .await
+            .unwrap();
+
+        assert_eq!(response.row_count, 1);
+        assert_eq!(response.execution_time_ms, 3);
+        let recorded = history_rows(&pool).await;
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].2, "success");
+        assert_eq!(recorded[0].3, None);
     }
 }

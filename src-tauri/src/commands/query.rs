@@ -235,26 +235,48 @@ fn pg_rows_to_json(rows: &[PgRow]) -> (Vec<String>, Vec<serde_json::Value>) {
 
 fn apply_select_limit(sql: &str, limit: Option<i64>) -> String {
     if let Some(lim) = limit.filter(|&l| l > 0) {
-        if starts_with_select(sql) {
+        if let Some(body) = wrappable_select_body(sql) {
             // The newline keeps a trailing `-- comment` from swallowing the `)`.
-            return format!(
-                "SELECT * FROM ({}\n) _limited LIMIT {}",
-                sql.trim().trim_end_matches(';'),
-                lim
-            );
+            return format!("SELECT * FROM ({}\n) _limited LIMIT {}", body, lim);
         }
     }
 
     sql.to_string()
 }
 
-fn starts_with_select(sql: &str) -> bool {
-    normalize_for_prefix(sql).trim_start().starts_with("select")
+/// The SQL to place inside the limit subquery, or `None` when the statement
+/// can't be wrapped safely and should run as written: not a SELECT,
+/// `SELECT ... INTO`, more than one statement, or text after a final `;`.
+fn wrappable_select_body(sql: &str) -> Option<&str> {
+    let normalized = normalize_for_prefix(sql);
+    let normalized = normalized.trim();
+    if !normalized.starts_with("select") || has_word(normalized, "into") {
+        return None;
+    }
+    // Comment-stripped, a single statement has at most one `;`, at the end.
+    let without_terminator = normalized.strip_suffix(';').unwrap_or(normalized);
+    if without_terminator.contains(';') {
+        return None;
+    }
+
+    let body = sql.trim();
+    match body.strip_suffix(';') {
+        Some(stripped) => Some(stripped),
+        // A `;` followed only by a comment can't be removed safely.
+        None if normalized.ends_with(';') => None,
+        None => Some(body),
+    }
+}
+
+/// Whether `word` appears as a whole SQL word in already-normalized text.
+fn has_word(normalized: &str, word: &str) -> bool {
+    normalized
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .any(|w| w == word)
 }
 
 fn determine_query_mode(sql: &str) -> QueryMode {
-    // Padded with spaces so `" returning "` matches whole words; the keyword
-    // prefix check has to skip that leading space.
+    // normalize_for_prefix pads with spaces; skip them for the prefix check.
     let normalized = normalize_for_prefix(sql);
     let head = normalized.trim_start();
 
@@ -268,7 +290,7 @@ fn determine_query_mode(sql: &str) -> QueryMode {
         || head.starts_with("grant")
         || head.starts_with("revoke")
     {
-        if normalized.contains(" returning ") {
+        if has_word(&normalized, "returning") {
             QueryMode::ReturnsRows
         } else {
             QueryMode::ExecuteOnly
@@ -633,5 +655,51 @@ mod tests {
             effective,
             "SELECT * FROM (select id from users -- newest first\n) _limited LIMIT 5"
         );
+    }
+
+    #[test]
+    fn returning_on_its_own_line_still_returns_rows() {
+        assert_eq!(
+            determine_query_mode("INSERT INTO t (a) VALUES (1)\nRETURNING id"),
+            QueryMode::ReturnsRows
+        );
+        assert_eq!(
+            determine_query_mode("delete from t returning\n*"),
+            QueryMode::ReturnsRows
+        );
+    }
+
+    #[test]
+    fn returning_must_be_a_whole_word() {
+        assert_eq!(
+            determine_query_mode("update t set returning_customer = true"),
+            QueryMode::ExecuteOnly
+        );
+    }
+
+    #[test]
+    fn semicolon_followed_by_comment_runs_unwrapped() {
+        let sql = "select 1; -- done";
+        assert_eq!(apply_select_limit(sql, Some(10)), sql);
+        let sql = "select 1;\n/* trailing */";
+        assert_eq!(apply_select_limit(sql, Some(10)), sql);
+    }
+
+    #[test]
+    fn multiple_statements_run_unwrapped() {
+        let sql = "select 1; select 2";
+        assert_eq!(apply_select_limit(sql, Some(10)), sql);
+    }
+
+    #[test]
+    fn select_into_runs_unwrapped() {
+        let sql = "SELECT * INTO archived_users FROM users";
+        assert_eq!(apply_select_limit(sql, Some(10)), sql);
+    }
+
+    #[test]
+    fn identifiers_containing_into_still_get_limited() {
+        let effective = apply_select_limit("select intouch_id from users", Some(3));
+        assert!(effective.ends_with("_limited LIMIT 3"));
     }
 }

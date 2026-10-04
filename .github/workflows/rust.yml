@@ -30,6 +30,9 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --component clippy,rustfmt
           rustup default stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
       # tauri::generate_context! needs the configured frontendDist to exist.
       - name: Stub frontend dist
         working-directory: .

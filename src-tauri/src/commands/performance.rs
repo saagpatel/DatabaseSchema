@@ -26,9 +26,7 @@ pub async fn parse_explain_plan(
     // Use a transaction that always rolls back so EXPLAIN ANALYZE
     // on DML (INSERT/UPDATE/DELETE) doesn't persist side effects
     let mut tx = pool.begin().await?;
-    let row: sqlx::postgres::PgRow = sqlx::query(&explain_sql)
-        .fetch_one(&mut *tx)
-        .await?;
+    let row: sqlx::postgres::PgRow = sqlx::query(&explain_sql).fetch_one(&mut *tx).await?;
     tx.rollback().await?;
 
     use sqlx::Row;
@@ -120,7 +118,11 @@ pub async fn get_index_stats(
 }
 
 fn parse_plan_node(json: &serde_json::Value) -> PlanNode {
-    let get_str = |key: &str| json.get(key).and_then(|v| v.as_str()).map(|s| s.to_string());
+    let get_str = |key: &str| {
+        json.get(key)
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    };
     let get_f64 = |key: &str| json.get(key).and_then(|v| v.as_f64());
     let get_i64 = |key: &str| json.get(key).and_then(|v| v.as_i64());
     let get_str_vec = |key: &str| {
@@ -196,8 +198,7 @@ fn compute_warnings(node: &mut PlanNode) {
             if ratio > 10.0 {
                 node.warnings.push(format!(
                     "Row estimate mismatch: planned {}, actual {} — consider running ANALYZE",
-                    node.plan_rows as i64,
-                    actual as i64,
+                    node.plan_rows as i64, actual as i64,
                 ));
             }
         }
@@ -206,10 +207,8 @@ fn compute_warnings(node: &mut PlanNode) {
     // Disk reads (shared read blocks > 0 indicates cache misses)
     if let Some(reads) = node.shared_read_blocks {
         if reads > 100 {
-            node.warnings.push(format!(
-                "High disk I/O: {} blocks read from disk",
-                reads
-            ));
+            node.warnings
+                .push(format!("High disk I/O: {} blocks read from disk", reads));
         }
     }
 
@@ -357,6 +356,9 @@ mod tests {
         };
 
         compute_warnings(&mut node);
-        assert!(node.warnings.iter().any(|w| w.contains("Row estimate mismatch")));
+        assert!(node
+            .warnings
+            .iter()
+            .any(|w| w.contains("Row estimate mismatch")));
     }
 }

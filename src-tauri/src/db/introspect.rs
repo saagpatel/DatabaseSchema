@@ -20,10 +20,7 @@ pub async fn list_schemas(pool: &PgPool) -> Result<Vec<String>, AppError> {
 }
 
 /// Full schema introspection: tables, columns, foreign keys, indexes, row estimates
-pub async fn introspect_schema(
-    pool: &PgPool,
-    schema_name: &str,
-) -> Result<SchemaInfo, AppError> {
+pub async fn introspect_schema(pool: &PgPool, schema_name: &str) -> Result<SchemaInfo, AppError> {
     // Fetch tables
     let table_rows: Vec<TableRow> = sqlx::query_as(
         "SELECT table_schema::text, table_name::text, table_type::text
@@ -167,9 +164,7 @@ pub async fn introspect_schema(
     let tables: Vec<TableInfo> = table_rows
         .into_iter()
         .map(|row| {
-            let columns = columns_by_table
-                .remove(&row.table_name)
-                .unwrap_or_default();
+            let columns = columns_by_table.remove(&row.table_name).unwrap_or_default();
             let indexes: Vec<IndexInfo> = indexes_by_table
                 .remove(&row.table_name)
                 .map(|m| m.into_values().collect())

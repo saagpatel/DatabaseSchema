@@ -36,9 +36,8 @@ export function ResultsTable({ result }: ResultsTableProps) {
   const visibleRows = result.rows.slice(startIdx, endIdx);
   const offsetY = startIdx * ROW_HEIGHT;
 
-  // Statements without a result set (INSERT/UPDATE/DELETE without RETURNING,
-  // DDL) come back with no columns; rowCount is then the rows affected.
-  const isStatementResult = result.columns.length === 0;
+  // Statements without a result set report rows affected instead of a table.
+  const isStatementResult = result.kind === "statement";
   const rowLabel = `${result.rowCount} row${result.rowCount !== 1 ? "s" : ""}`;
 
   const formatValue = (val: unknown): string => {

@@ -236,8 +236,9 @@ fn pg_rows_to_json(rows: &[PgRow]) -> (Vec<String>, Vec<serde_json::Value>) {
 fn apply_select_limit(sql: &str, limit: Option<i64>) -> String {
     if let Some(lim) = limit.filter(|&l| l > 0) {
         if starts_with_select(sql) {
+            // The newline keeps a trailing `-- comment` from swallowing the `)`.
             return format!(
-                "SELECT * FROM ({}) _limited LIMIT {}",
+                "SELECT * FROM ({}\n) _limited LIMIT {}",
                 sql.trim().trim_end_matches(';'),
                 lim
             );
@@ -248,22 +249,24 @@ fn apply_select_limit(sql: &str, limit: Option<i64>) -> String {
 }
 
 fn starts_with_select(sql: &str) -> bool {
-    let normalized = normalize_for_prefix(sql);
-    normalized.starts_with("select")
+    normalize_for_prefix(sql).trim_start().starts_with("select")
 }
 
 fn determine_query_mode(sql: &str) -> QueryMode {
+    // Padded with spaces so `" returning "` matches whole words; the keyword
+    // prefix check has to skip that leading space.
     let normalized = normalize_for_prefix(sql);
+    let head = normalized.trim_start();
 
-    if normalized.starts_with("insert")
-        || normalized.starts_with("update")
-        || normalized.starts_with("delete")
-        || normalized.starts_with("create")
-        || normalized.starts_with("alter")
-        || normalized.starts_with("drop")
-        || normalized.starts_with("truncate")
-        || normalized.starts_with("grant")
-        || normalized.starts_with("revoke")
+    if head.starts_with("insert")
+        || head.starts_with("update")
+        || head.starts_with("delete")
+        || head.starts_with("create")
+        || head.starts_with("alter")
+        || head.starts_with("drop")
+        || head.starts_with("truncate")
+        || head.starts_with("grant")
+        || head.starts_with("revoke")
     {
         if normalized.contains(" returning ") {
             QueryMode::ReturnsRows
@@ -443,7 +446,7 @@ mod tests {
         let effective = apply_select_limit(sql, Some(lim));
         assert_eq!(
             effective,
-            "SELECT * FROM (SELECT id FROM users) _limited LIMIT 50"
+            "SELECT * FROM (SELECT id FROM users\n) _limited LIMIT 50"
         );
     }
 
@@ -456,7 +459,7 @@ mod tests {
         // Subquery wrapping means the outer LIMIT is applied safely
         assert_eq!(
             effective,
-            "SELECT * FROM (SELECT * FROM users LIMIT 10) _limited LIMIT 5"
+            "SELECT * FROM (SELECT * FROM users LIMIT 10\n) _limited LIMIT 5"
         );
     }
 
@@ -598,5 +601,37 @@ mod tests {
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].2, "success");
         assert_eq!(recorded[0].3, None);
+    }
+
+    #[test]
+    fn limit_applies_to_select_after_whitespace_and_comments() {
+        let effective = apply_select_limit("\n  -- recent users\n  select id from users", Some(10));
+        assert_eq!(
+            effective,
+            "SELECT * FROM (-- recent users\n  select id from users\n) _limited LIMIT 10"
+        );
+    }
+
+    #[test]
+    fn limit_is_not_applied_to_identifiers_that_only_contain_select() {
+        let sql = "UPDATE selections SET active = true";
+        assert_eq!(apply_select_limit(sql, Some(10)), sql);
+    }
+
+    #[test]
+    fn write_statements_after_comments_execute_without_rows() {
+        assert_eq!(
+            determine_query_mode("/* cleanup */ delete from sessions"),
+            QueryMode::ExecuteOnly
+        );
+    }
+
+    #[test]
+    fn trailing_line_comment_does_not_swallow_the_wrapper() {
+        let effective = apply_select_limit("select id from users -- newest first", Some(5));
+        assert_eq!(
+            effective,
+            "SELECT * FROM (select id from users -- newest first\n) _limited LIMIT 5"
+        );
     }
 }

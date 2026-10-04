@@ -187,7 +187,7 @@ mod tests {
         let salt = generate_salt().unwrap();
         let key = derive_key("test", &salt);
         // Too short to contain nonce + tag
-        let short = base64::engine::general_purpose::STANDARD.encode(&[0u8; 5]);
+        let short = base64::engine::general_purpose::STANDARD.encode([0u8; 5]);
         let result = decrypt(&key, &short);
         assert!(result.is_err());
     }

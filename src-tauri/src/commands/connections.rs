@@ -3,17 +3,18 @@ use tauri::State;
 use crate::crypto::encryption::{decrypt, encrypt};
 use crate::db::postgres;
 use crate::error::AppError;
-use crate::models::connection::{ConnectionDisplay, ConnectionInput, ConnectionRow, DecryptedConnection};
+use crate::models::connection::{
+    ConnectionDisplay, ConnectionInput, ConnectionRow, DecryptedConnection,
+};
 use crate::AppState;
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn list_connections(
     state: State<'_, AppState>,
 ) -> Result<Vec<ConnectionDisplay>, AppError> {
-    let rows: Vec<ConnectionRow> =
-        sqlx::query_as("SELECT * FROM connections ORDER BY name ASC")
-            .fetch_all(&state.local_db)
-            .await?;
+    let rows: Vec<ConnectionRow> = sqlx::query_as("SELECT * FROM connections ORDER BY name ASC")
+        .fetch_all(&state.local_db)
+        .await?;
 
     // Snapshot connected IDs and release mutex before decryption loop
     let connected_ids: std::collections::HashSet<String> = {
@@ -168,12 +169,11 @@ pub async fn update_connection(
     }
 
     // Fetch the actual created_at from the database
-    let row: Option<(String, String)> = sqlx::query_as(
-        "SELECT created_at, updated_at FROM connections WHERE id = ?",
-    )
-    .bind(&id)
-    .fetch_optional(&state.local_db)
-    .await?;
+    let row: Option<(String, String)> =
+        sqlx::query_as("SELECT created_at, updated_at FROM connections WHERE id = ?")
+            .bind(&id)
+            .fetch_optional(&state.local_db)
+            .await?;
     let (created_at, updated_at) = row.unwrap_or_else(|| {
         let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
         (now.clone(), now)
@@ -195,10 +195,7 @@ pub async fn update_connection(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub async fn delete_connection(
-    id: String,
-    state: State<'_, AppState>,
-) -> Result<(), AppError> {
+pub async fn delete_connection(id: String, state: State<'_, AppState>) -> Result<(), AppError> {
     // Disconnect if connected — remove from mutex first, close outside the lock
     let old_pool = {
         let mut pg_pools = state.pg_pools.lock().await;
@@ -240,10 +237,7 @@ pub async fn test_connection(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub async fn connect(
-    id: String,
-    state: State<'_, AppState>,
-) -> Result<(), AppError> {
+pub async fn connect(id: String, state: State<'_, AppState>) -> Result<(), AppError> {
     let key = &state.encryption_key;
 
     let row: ConnectionRow = sqlx::query_as("SELECT * FROM connections WHERE id = ?")
@@ -281,10 +275,7 @@ pub async fn connect(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub async fn disconnect(
-    id: String,
-    state: State<'_, AppState>,
-) -> Result<(), AppError> {
+pub async fn disconnect(id: String, state: State<'_, AppState>) -> Result<(), AppError> {
     let pool = {
         let mut pg_pools = state.pg_pools.lock().await;
         pg_pools.remove(&id)

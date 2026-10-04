@@ -1,4 +1,6 @@
 export interface QueryResult {
+  /** "statement" = no result set (writes without RETURNING, DDL); rowCount is rows affected. */
+  kind: "rows" | "statement";
   columns: string[];
   rows: Record<string, unknown>[];
   rowCount: number;

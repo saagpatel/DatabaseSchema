@@ -5,7 +5,9 @@ use std::time::Instant;
 use tauri::State;
 
 use crate::error::AppError;
-use crate::models::query::{ExplainResult, QueryHistoryEntry, QueryHistoryRow, QueryResult};
+use crate::models::query::{
+    ExplainResult, QueryHistoryEntry, QueryHistoryRow, QueryResult, ResultKind,
+};
 use crate::AppState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,7 +57,11 @@ pub async fn execute_query(
     };
 
     let elapsed = start.elapsed().as_millis() as u64;
-    record_and_finish(&state.local_db, &connection_id, &sql, elapsed, result).await
+    let kind = match query_mode {
+        QueryMode::ReturnsRows => ResultKind::Rows,
+        QueryMode::ExecuteOnly => ResultKind::Statement,
+    };
+    record_and_finish(&state.local_db, &connection_id, &sql, elapsed, kind, result).await
 }
 
 type QueryRows = (Vec<String>, Vec<serde_json::Value>, usize);
@@ -67,6 +73,7 @@ async fn record_and_finish(
     connection_id: &str,
     sql: &str,
     elapsed_ms: u64,
+    kind: ResultKind,
     result: Result<QueryRows, sqlx::Error>,
 ) -> Result<QueryResult, AppError> {
     let entry = history_entry_for(result.as_ref().map(|(_, _, row_count)| *row_count));
@@ -83,6 +90,7 @@ async fn record_and_finish(
 
     match result {
         Ok((columns, rows, row_count)) => Ok(QueryResult {
+            kind,
             columns,
             rows,
             row_count,
@@ -235,37 +243,97 @@ fn pg_rows_to_json(rows: &[PgRow]) -> (Vec<String>, Vec<serde_json::Value>) {
 
 fn apply_select_limit(sql: &str, limit: Option<i64>) -> String {
     if let Some(lim) = limit.filter(|&l| l > 0) {
-        if starts_with_select(sql) {
-            return format!(
-                "SELECT * FROM ({}) _limited LIMIT {}",
-                sql.trim().trim_end_matches(';'),
-                lim
-            );
+        if let Some(body) = wrappable_select_body(sql) {
+            // The newline keeps a trailing `-- comment` from swallowing the `)`.
+            return format!("SELECT * FROM ({}\n) _limited LIMIT {}", body, lim);
         }
     }
 
     sql.to_string()
 }
 
-fn starts_with_select(sql: &str) -> bool {
+/// The SQL to place inside the limit subquery, or `None` when the statement
+/// can't be wrapped safely and should run as written: not a SELECT,
+/// `SELECT ... INTO`, more than one statement, or text after a final `;`.
+fn wrappable_select_body(sql: &str) -> Option<&str> {
     let normalized = normalize_for_prefix(sql);
-    normalized.starts_with("select")
+    let normalized = normalized.trim();
+    if !normalized.starts_with("select") || has_word(normalized, "into") {
+        return None;
+    }
+    // Comment-stripped, a single statement has at most one `;`, at the end.
+    let without_terminator = normalized.strip_suffix(';').unwrap_or(normalized);
+    if without_terminator.contains(';') {
+        return None;
+    }
+
+    let body = sql.trim();
+    match body.strip_suffix(';') {
+        Some(stripped) => Some(stripped),
+        // A `;` followed only by a comment can't be removed safely.
+        None if normalized.ends_with(';') => None,
+        None => Some(body),
+    }
+}
+
+/// Whether `word` appears as a whole SQL word in already-normalized text.
+fn has_word(normalized: &str, word: &str) -> bool {
+    normalized
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .any(|w| w == word)
+}
+
+/// Other statements that produce no result set (shown as "Statement executed").
+const STATEMENT_VERBS: &[&str] = &[
+    "do",
+    "call",
+    "set",
+    "reset",
+    "vacuum",
+    "analyze",
+    "merge",
+    "comment",
+    "refresh",
+    "reindex",
+    "cluster",
+    "lock",
+    "begin",
+    "start",
+    "commit",
+    "rollback",
+    "savepoint",
+    "release",
+    "discard",
+    "listen",
+    "notify",
+    "unlisten",
+];
+
+/// Whether normalized text starts with `word` as a whole word.
+fn has_leading_word(head: &str, word: &str) -> bool {
+    head.strip_prefix(word)
+        .is_some_and(|rest| !rest.starts_with(|c: char| c.is_alphanumeric() || c == '_'))
 }
 
 fn determine_query_mode(sql: &str) -> QueryMode {
+    // normalize_for_prefix pads with spaces; skip them for the prefix check.
     let normalized = normalize_for_prefix(sql);
+    let head = normalized.trim_start();
 
-    if normalized.starts_with("insert")
-        || normalized.starts_with("update")
-        || normalized.starts_with("delete")
-        || normalized.starts_with("create")
-        || normalized.starts_with("alter")
-        || normalized.starts_with("drop")
-        || normalized.starts_with("truncate")
-        || normalized.starts_with("grant")
-        || normalized.starts_with("revoke")
+    if head.starts_with("insert")
+        || head.starts_with("update")
+        || head.starts_with("delete")
+        || head.starts_with("create")
+        || head.starts_with("alter")
+        || head.starts_with("drop")
+        || head.starts_with("truncate")
+        || head.starts_with("grant")
+        || head.starts_with("revoke")
+        || STATEMENT_VERBS
+            .iter()
+            .any(|verb| has_leading_word(head, verb))
     {
-        if normalized.contains(" returning ") {
+        if has_word(&normalized, "returning") {
             QueryMode::ReturnsRows
         } else {
             QueryMode::ExecuteOnly
@@ -279,6 +347,10 @@ fn normalize_for_prefix(sql: &str) -> String {
     let mut out = String::new();
     let mut chars = sql.chars().peekable();
     let mut in_block_comment = false;
+    // Last two input characters outside comments/literals, for context checks.
+    let mut prev: Option<char> = None;
+    let mut prev2: Option<char> = None;
+    let is_ident = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '$');
 
     while let Some(ch) = chars.next() {
         if in_block_comment {
@@ -305,10 +377,91 @@ fn normalize_for_prefix(sql: &str) -> String {
             continue;
         }
 
+        // String literals and quoted identifiers can contain `;`, `--`, `/*` or
+        // keywords; replace their contents so they can't affect the checks.
+        if ch == '\'' || ch == '"' {
+            // E'...' strings use backslash escapes.
+            let backslash_escapes =
+                ch == '\'' && matches!(prev, Some('e' | 'E')) && !is_ident(prev2);
+            skip_quoted(&mut chars, ch, backslash_escapes);
+            out.push(ch);
+            out.push(ch);
+            prev2 = prev;
+            prev = Some(ch);
+            continue;
+        }
+
+        // `$` inside an identifier (e.g. `a$b`) is not a dollar quote.
+        if ch == '$' && !is_ident(prev) {
+            if let Some(tag) = dollar_quote_tag(&chars) {
+                for _ in 0..tag.chars().count() - 1 {
+                    chars.next();
+                }
+                skip_dollar_quoted(&mut chars, &tag);
+                out.push_str("''");
+                prev2 = prev;
+                prev = Some('$');
+                continue;
+            }
+        }
+
         out.push(ch);
+        prev2 = prev;
+        prev = Some(ch);
     }
 
     format!(" {} ", out.trim().to_lowercase())
+}
+
+/// Consumes a quoted section up to its closing `quote` (doubled quotes escape;
+/// with `backslash_escapes`, `\\` escapes the next character as in `E'...'`).
+fn skip_quoted(
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    quote: char,
+    backslash_escapes: bool,
+) {
+    while let Some(c) = chars.next() {
+        if backslash_escapes && c == '\\' {
+            chars.next();
+            continue;
+        }
+        if c == quote {
+            if chars.peek() == Some(&quote) {
+                chars.next();
+                continue;
+            }
+            return;
+        }
+    }
+}
+
+/// If the input (positioned just after a `$`) starts a dollar-quote opener
+/// like `$$` or `$tag$`, returns the full opener including both `$`.
+fn dollar_quote_tag(chars: &std::iter::Peekable<std::str::Chars<'_>>) -> Option<String> {
+    let mut tag = String::from("$");
+    for c in chars.clone() {
+        if c == '$' {
+            tag.push('$');
+            return Some(tag);
+        }
+        let valid = c == '_' || c.is_alphabetic() || (tag.len() > 1 && c.is_ascii_digit());
+        if !valid {
+            return None;
+        }
+        tag.push(c);
+    }
+    None
+}
+
+/// Consumes a dollar-quoted body up to and including the closing `tag`.
+fn skip_dollar_quoted(chars: &mut std::iter::Peekable<std::str::Chars<'_>>, tag: &str) {
+    let mut window = String::new();
+    for c in chars.by_ref() {
+        window.push(c);
+        if window.ends_with(tag) {
+            return;
+        }
+    }
 }
 
 /// Extract a typed value from a PgRow column, falling back to string representation
@@ -426,6 +579,7 @@ mod tests {
         record_and_finish, HistoryEntryFields, QueryMode,
     };
     use crate::error::AppError;
+    use crate::models::query::ResultKind;
 
     #[test]
     fn test_limit_wrapping_format() {
@@ -443,7 +597,7 @@ mod tests {
         let effective = apply_select_limit(sql, Some(lim));
         assert_eq!(
             effective,
-            "SELECT * FROM (SELECT id FROM users) _limited LIMIT 50"
+            "SELECT * FROM (SELECT id FROM users\n) _limited LIMIT 50"
         );
     }
 
@@ -456,7 +610,7 @@ mod tests {
         // Subquery wrapping means the outer LIMIT is applied safely
         assert_eq!(
             effective,
-            "SELECT * FROM (SELECT * FROM users LIMIT 10) _limited LIMIT 5"
+            "SELECT * FROM (SELECT * FROM users LIMIT 10\n) _limited LIMIT 5"
         );
     }
 
@@ -564,8 +718,15 @@ mod tests {
         let (_dir, pool) = local_db_with_connection().await;
         let failure = sqlx::Error::Protocol("relation \"missing\" does not exist".to_string());
 
-        let response =
-            record_and_finish(&pool, "conn-1", "SELECT * FROM missing", 7, Err(failure)).await;
+        let response = record_and_finish(
+            &pool,
+            "conn-1",
+            "SELECT * FROM missing",
+            7,
+            ResultKind::Rows,
+            Err(failure),
+        )
+        .await;
 
         assert!(matches!(response, Err(AppError::Database(_))));
         let rows = history_rows(&pool).await;
@@ -588,9 +749,10 @@ mod tests {
             1,
         );
 
-        let response = record_and_finish(&pool, "conn-1", "SELECT 1", 3, Ok(rows))
-            .await
-            .unwrap();
+        let response =
+            record_and_finish(&pool, "conn-1", "SELECT 1", 3, ResultKind::Rows, Ok(rows))
+                .await
+                .unwrap();
 
         assert_eq!(response.row_count, 1);
         assert_eq!(response.execution_time_ms, 3);
@@ -598,5 +760,143 @@ mod tests {
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].2, "success");
         assert_eq!(recorded[0].3, None);
+    }
+
+    #[test]
+    fn limit_applies_to_select_after_whitespace_and_comments() {
+        let effective = apply_select_limit("\n  -- recent users\n  select id from users", Some(10));
+        assert_eq!(
+            effective,
+            "SELECT * FROM (-- recent users\n  select id from users\n) _limited LIMIT 10"
+        );
+    }
+
+    #[test]
+    fn limit_is_not_applied_to_identifiers_that_only_contain_select() {
+        let sql = "UPDATE selections SET active = true";
+        assert_eq!(apply_select_limit(sql, Some(10)), sql);
+    }
+
+    #[test]
+    fn write_statements_after_comments_execute_without_rows() {
+        assert_eq!(
+            determine_query_mode("/* cleanup */ delete from sessions"),
+            QueryMode::ExecuteOnly
+        );
+    }
+
+    #[test]
+    fn trailing_line_comment_does_not_swallow_the_wrapper() {
+        let effective = apply_select_limit("select id from users -- newest first", Some(5));
+        assert_eq!(
+            effective,
+            "SELECT * FROM (select id from users -- newest first\n) _limited LIMIT 5"
+        );
+    }
+
+    #[test]
+    fn returning_on_its_own_line_still_returns_rows() {
+        assert_eq!(
+            determine_query_mode("INSERT INTO t (a) VALUES (1)\nRETURNING id"),
+            QueryMode::ReturnsRows
+        );
+        assert_eq!(
+            determine_query_mode("delete from t returning\n*"),
+            QueryMode::ReturnsRows
+        );
+    }
+
+    #[test]
+    fn returning_must_be_a_whole_word() {
+        assert_eq!(
+            determine_query_mode("update t set returning_customer = true"),
+            QueryMode::ExecuteOnly
+        );
+    }
+
+    #[test]
+    fn semicolon_followed_by_comment_runs_unwrapped() {
+        let sql = "select 1; -- done";
+        assert_eq!(apply_select_limit(sql, Some(10)), sql);
+        let sql = "select 1;\n/* trailing */";
+        assert_eq!(apply_select_limit(sql, Some(10)), sql);
+    }
+
+    #[test]
+    fn multiple_statements_run_unwrapped() {
+        let sql = "select 1; select 2";
+        assert_eq!(apply_select_limit(sql, Some(10)), sql);
+    }
+
+    #[test]
+    fn select_into_runs_unwrapped() {
+        let sql = "SELECT * INTO archived_users FROM users";
+        assert_eq!(apply_select_limit(sql, Some(10)), sql);
+    }
+
+    #[test]
+    fn identifiers_containing_into_still_get_limited() {
+        let effective = apply_select_limit("select intouch_id from users", Some(3));
+        assert!(effective.ends_with("_limited LIMIT 3"));
+    }
+
+    #[test]
+    fn literals_containing_semicolons_or_into_are_still_limited() {
+        let effective = apply_select_limit("select * from logs where msg like '%;%'", Some(5));
+        assert!(effective.ends_with("_limited LIMIT 5"));
+        let effective = apply_select_limit("select * from t where note = 'opt into'", Some(5));
+        assert!(effective.ends_with("_limited LIMIT 5"));
+    }
+
+    #[test]
+    fn comment_markers_inside_literals_do_not_hide_the_rest() {
+        let sql = "select 'a--b' as x; -- done";
+        assert_eq!(apply_select_limit(sql, Some(5)), sql);
+        let sql = "select 'it''s /* not a comment' as x; select 2";
+        assert_eq!(apply_select_limit(sql, Some(5)), sql);
+    }
+
+    #[test]
+    fn dollar_quoted_bodies_and_quoted_identifiers_are_skipped() {
+        assert_eq!(
+            normalize_for_prefix("select $fn$ ; into $fn$, \"weird;name\" from t"),
+            " select '', \"\" from t "
+        );
+        // Positional parameters are not dollar quotes.
+        assert_eq!(normalize_for_prefix("select $1"), " select $1 ");
+    }
+
+    #[test]
+    fn e_strings_with_backslash_escapes_keep_returning_visible() {
+        assert_eq!(
+            determine_query_mode(r"insert into t values (E'a\'b') returning id"),
+            QueryMode::ReturnsRows
+        );
+        let sql = r"select E'\'' into newtable from t";
+        assert_eq!(apply_select_limit(sql, Some(5)), sql);
+    }
+
+    #[test]
+    fn dollar_inside_identifier_is_not_a_quote() {
+        let sql = "select a$b$c from t; delete from x";
+        assert_eq!(apply_select_limit(sql, Some(5)), sql);
+    }
+
+    #[test]
+    fn utility_statements_are_reported_as_statements() {
+        for sql in [
+            "DO $$ begin perform 1; end $$",
+            "CALL refresh_stats()",
+            "SET search_path TO app",
+            "VACUUM ANALYZE users",
+            "BEGIN",
+        ] {
+            assert_eq!(determine_query_mode(sql), QueryMode::ExecuteOnly, "{sql}");
+        }
+        // A word that merely starts with a verb is not that verb.
+        assert_eq!(
+            determine_query_mode("settings_view"),
+            QueryMode::ReturnsRows
+        );
     }
 }

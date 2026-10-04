@@ -45,9 +45,7 @@ pub fn run() {
             let db_path = app_data_dir.join("dbviz.db");
 
             let rt = tokio::runtime::Handle::current();
-            let local_db = rt.block_on(async {
-                db::local::init_local_db(&db_path).await
-            })?;
+            let local_db = rt.block_on(async { db::local::init_local_db(&db_path).await })?;
 
             let state = AppState {
                 local_db,

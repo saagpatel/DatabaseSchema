@@ -1,8 +1,18 @@
 use serde::{Deserialize, Serialize};
 
+/// Whether a query produced a result set (`rows`) or only a row count
+/// (`statement`: writes without RETURNING, DDL). An empty SELECT is `rows`.
+#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ResultKind {
+    Rows,
+    Statement,
+}
+
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryResult {
+    pub kind: ResultKind,
     pub columns: Vec<String>,
     pub rows: Vec<serde_json::Value>,
     pub row_count: usize,

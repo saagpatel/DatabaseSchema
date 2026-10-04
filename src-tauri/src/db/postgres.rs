@@ -34,9 +34,7 @@ pub async fn create_pg_pool(conn: &DecryptedConnection) -> Result<PgPool, AppErr
 pub async fn test_pg_connection(conn: &DecryptedConnection) -> Result<String, AppError> {
     let pool = create_pg_pool(conn).await?;
 
-    let row: (String,) = sqlx::query_as("SELECT version()")
-        .fetch_one(&pool)
-        .await?;
+    let row: (String,) = sqlx::query_as("SELECT version()").fetch_one(&pool).await?;
 
     pool.close().await;
 

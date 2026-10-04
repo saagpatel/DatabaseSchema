@@ -102,7 +102,10 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert!(row.0 > 0, "Settings should still have default values after re-init");
+        assert!(
+            row.0 > 0,
+            "Settings should still have default values after re-init"
+        );
 
         pool.close().await;
     }

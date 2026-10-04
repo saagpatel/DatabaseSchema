@@ -2,17 +2,15 @@ use tauri::State;
 
 use crate::error::AppError;
 use crate::models::ai::{
-    AiSuggestInput, AiSuggestion, AiSuggestionRow, OllamaGenerateRequest,
-    OllamaGenerateResponse, OllamaStatus, OllamaTagsResponse, SuggestionType,
+    AiSuggestInput, AiSuggestion, AiSuggestionRow, OllamaGenerateRequest, OllamaGenerateResponse,
+    OllamaStatus, OllamaTagsResponse, SuggestionType,
 };
 use crate::models::settings::{AppSettings, SettingRow};
 use crate::AppState;
 
 /// Check Ollama availability and list models
 #[tauri::command(rename_all = "camelCase")]
-pub async fn check_ollama_status(
-    state: State<'_, AppState>,
-) -> Result<OllamaStatus, AppError> {
+pub async fn check_ollama_status(state: State<'_, AppState>) -> Result<OllamaStatus, AppError> {
     let settings = load_settings(&state).await?;
     let endpoint = settings.ollama_endpoint.trim_end_matches('/').to_string();
 
@@ -40,10 +38,7 @@ pub async fn check_ollama_status(
                 available: false,
                 endpoint: endpoint.clone(),
                 models: vec![],
-                error: Some(format!(
-                    "Cannot reach Ollama at {}: {}",
-                    endpoint, e
-                )),
+                error: Some(format!("Cannot reach Ollama at {}: {}", endpoint, e)),
             });
         }
         _ => {} // success — proceed to list models
@@ -54,8 +49,7 @@ pub async fn check_ollama_status(
     match client.get(&models_url).send().await {
         Ok(resp) => match resp.json::<OllamaTagsResponse>().await {
             Ok(tags) => {
-                let model_names: Vec<String> =
-                    tags.models.into_iter().map(|m| m.name).collect();
+                let model_names: Vec<String> = tags.models.into_iter().map(|m| m.name).collect();
                 Ok(OllamaStatus {
                     available: true,
                     endpoint,
@@ -125,9 +119,10 @@ pub async fn ai_suggest(
         )));
     }
 
-    let result: OllamaGenerateResponse = resp.json().await.map_err(|e| {
-        AppError::General(format!("Failed to parse Ollama response: {e}"))
-    })?;
+    let result: OllamaGenerateResponse = resp
+        .json()
+        .await
+        .map_err(|e| AppError::General(format!("Failed to parse Ollama response: {e}")))?;
 
     // Save to history
     let id = uuid::Uuid::new_v4().to_string();
@@ -317,18 +312,21 @@ mod tests {
 
     #[test]
     fn test_build_prompt_general() {
-        let prompt = build_prompt(
-            &SuggestionType::General,
-            "How do I use CTEs in PostgreSQL?",
-        );
+        let prompt = build_prompt(&SuggestionType::General, "How do I use CTEs in PostgreSQL?");
         assert!(prompt.contains("PostgreSQL expert"));
         assert!(prompt.contains("CTEs"));
     }
 
     #[test]
     fn test_suggestion_type_display() {
-        assert_eq!(SuggestionType::QueryOptimization.to_string(), "query_optimization");
-        assert_eq!(SuggestionType::IndexSuggestion.to_string(), "index_suggestion");
+        assert_eq!(
+            SuggestionType::QueryOptimization.to_string(),
+            "query_optimization"
+        );
+        assert_eq!(
+            SuggestionType::IndexSuggestion.to_string(),
+            "index_suggestion"
+        );
         assert_eq!(SuggestionType::SchemaReview.to_string(), "schema_review");
         assert_eq!(SuggestionType::General.to_string(), "general");
     }

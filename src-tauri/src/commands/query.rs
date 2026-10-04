@@ -5,7 +5,9 @@ use std::time::Instant;
 use tauri::State;
 
 use crate::error::AppError;
-use crate::models::query::{ExplainResult, QueryHistoryEntry, QueryHistoryRow, QueryResult};
+use crate::models::query::{
+    ExplainResult, QueryHistoryEntry, QueryHistoryRow, QueryResult, ResultKind,
+};
 use crate::AppState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,7 +57,11 @@ pub async fn execute_query(
     };
 
     let elapsed = start.elapsed().as_millis() as u64;
-    record_and_finish(&state.local_db, &connection_id, &sql, elapsed, result).await
+    let kind = match query_mode {
+        QueryMode::ReturnsRows => ResultKind::Rows,
+        QueryMode::ExecuteOnly => ResultKind::Statement,
+    };
+    record_and_finish(&state.local_db, &connection_id, &sql, elapsed, kind, result).await
 }
 
 type QueryRows = (Vec<String>, Vec<serde_json::Value>, usize);
@@ -67,6 +73,7 @@ async fn record_and_finish(
     connection_id: &str,
     sql: &str,
     elapsed_ms: u64,
+    kind: ResultKind,
     result: Result<QueryRows, sqlx::Error>,
 ) -> Result<QueryResult, AppError> {
     let entry = history_entry_for(result.as_ref().map(|(_, _, row_count)| *row_count));
@@ -83,6 +90,7 @@ async fn record_and_finish(
 
     match result {
         Ok((columns, rows, row_count)) => Ok(QueryResult {
+            kind,
             columns,
             rows,
             row_count,
@@ -330,10 +338,72 @@ fn normalize_for_prefix(sql: &str) -> String {
             continue;
         }
 
+        // String literals and quoted identifiers can contain `;`, `--`, `/*` or
+        // keywords; replace their contents so they can't affect the checks.
+        if ch == '\'' || ch == '"' {
+            skip_quoted(&mut chars, ch);
+            out.push(ch);
+            out.push(ch);
+            continue;
+        }
+
+        if ch == '$' {
+            if let Some(tag) = dollar_quote_tag(&chars) {
+                for _ in 0..tag.chars().count() - 1 {
+                    chars.next();
+                }
+                skip_dollar_quoted(&mut chars, &tag);
+                out.push_str("''");
+                continue;
+            }
+        }
+
         out.push(ch);
     }
 
     format!(" {} ", out.trim().to_lowercase())
+}
+
+/// Consumes a quoted section up to its closing `quote` (doubled quotes escape).
+fn skip_quoted(chars: &mut std::iter::Peekable<std::str::Chars<'_>>, quote: char) {
+    while let Some(c) = chars.next() {
+        if c == quote {
+            if chars.peek() == Some(&quote) {
+                chars.next();
+                continue;
+            }
+            return;
+        }
+    }
+}
+
+/// If the input (positioned just after a `$`) starts a dollar-quote opener
+/// like `$$` or `$tag$`, returns the full opener including both `$`.
+fn dollar_quote_tag(chars: &std::iter::Peekable<std::str::Chars<'_>>) -> Option<String> {
+    let mut tag = String::from("$");
+    for c in chars.clone() {
+        if c == '$' {
+            tag.push('$');
+            return Some(tag);
+        }
+        let valid = c == '_' || c.is_alphabetic() || (tag.len() > 1 && c.is_ascii_digit());
+        if !valid {
+            return None;
+        }
+        tag.push(c);
+    }
+    None
+}
+
+/// Consumes a dollar-quoted body up to and including the closing `tag`.
+fn skip_dollar_quoted(chars: &mut std::iter::Peekable<std::str::Chars<'_>>, tag: &str) {
+    let mut window = String::new();
+    for c in chars.by_ref() {
+        window.push(c);
+        if window.ends_with(tag) {
+            return;
+        }
+    }
 }
 
 /// Extract a typed value from a PgRow column, falling back to string representation
@@ -451,6 +521,7 @@ mod tests {
         record_and_finish, HistoryEntryFields, QueryMode,
     };
     use crate::error::AppError;
+    use crate::models::query::ResultKind;
 
     #[test]
     fn test_limit_wrapping_format() {
@@ -589,8 +660,15 @@ mod tests {
         let (_dir, pool) = local_db_with_connection().await;
         let failure = sqlx::Error::Protocol("relation \"missing\" does not exist".to_string());
 
-        let response =
-            record_and_finish(&pool, "conn-1", "SELECT * FROM missing", 7, Err(failure)).await;
+        let response = record_and_finish(
+            &pool,
+            "conn-1",
+            "SELECT * FROM missing",
+            7,
+            ResultKind::Rows,
+            Err(failure),
+        )
+        .await;
 
         assert!(matches!(response, Err(AppError::Database(_))));
         let rows = history_rows(&pool).await;
@@ -613,9 +691,10 @@ mod tests {
             1,
         );
 
-        let response = record_and_finish(&pool, "conn-1", "SELECT 1", 3, Ok(rows))
-            .await
-            .unwrap();
+        let response =
+            record_and_finish(&pool, "conn-1", "SELECT 1", 3, ResultKind::Rows, Ok(rows))
+                .await
+                .unwrap();
 
         assert_eq!(response.row_count, 1);
         assert_eq!(response.execution_time_ms, 3);
@@ -701,5 +780,31 @@ mod tests {
     fn identifiers_containing_into_still_get_limited() {
         let effective = apply_select_limit("select intouch_id from users", Some(3));
         assert!(effective.ends_with("_limited LIMIT 3"));
+    }
+
+    #[test]
+    fn literals_containing_semicolons_or_into_are_still_limited() {
+        let effective = apply_select_limit("select * from logs where msg like '%;%'", Some(5));
+        assert!(effective.ends_with("_limited LIMIT 5"));
+        let effective = apply_select_limit("select * from t where note = 'opt into'", Some(5));
+        assert!(effective.ends_with("_limited LIMIT 5"));
+    }
+
+    #[test]
+    fn comment_markers_inside_literals_do_not_hide_the_rest() {
+        let sql = "select 'a--b' as x; -- done";
+        assert_eq!(apply_select_limit(sql, Some(5)), sql);
+        let sql = "select 'it''s /* not a comment' as x; select 2";
+        assert_eq!(apply_select_limit(sql, Some(5)), sql);
+    }
+
+    #[test]
+    fn dollar_quoted_bodies_and_quoted_identifiers_are_skipped() {
+        assert_eq!(
+            normalize_for_prefix("select $fn$ ; into $fn$, \"weird;name\" from t"),
+            " select '', \"\" from t "
+        );
+        // Positional parameters are not dollar quotes.
+        assert_eq!(normalize_for_prefix("select $1"), " select $1 ");
     }
 }

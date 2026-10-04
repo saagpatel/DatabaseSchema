@@ -283,6 +283,38 @@ fn has_word(normalized: &str, word: &str) -> bool {
         .any(|w| w == word)
 }
 
+/// Other statements that produce no result set (shown as "Statement executed").
+const STATEMENT_VERBS: &[&str] = &[
+    "do",
+    "call",
+    "set",
+    "reset",
+    "vacuum",
+    "analyze",
+    "merge",
+    "comment",
+    "refresh",
+    "reindex",
+    "cluster",
+    "lock",
+    "begin",
+    "start",
+    "commit",
+    "rollback",
+    "savepoint",
+    "release",
+    "discard",
+    "listen",
+    "notify",
+    "unlisten",
+];
+
+/// Whether normalized text starts with `word` as a whole word.
+fn has_leading_word(head: &str, word: &str) -> bool {
+    head.strip_prefix(word)
+        .is_some_and(|rest| !rest.starts_with(|c: char| c.is_alphanumeric() || c == '_'))
+}
+
 fn determine_query_mode(sql: &str) -> QueryMode {
     // normalize_for_prefix pads with spaces; skip them for the prefix check.
     let normalized = normalize_for_prefix(sql);
@@ -297,6 +329,9 @@ fn determine_query_mode(sql: &str) -> QueryMode {
         || head.starts_with("truncate")
         || head.starts_with("grant")
         || head.starts_with("revoke")
+        || STATEMENT_VERBS
+            .iter()
+            .any(|verb| has_leading_word(head, verb))
     {
         if has_word(&normalized, "returning") {
             QueryMode::ReturnsRows
@@ -312,6 +347,10 @@ fn normalize_for_prefix(sql: &str) -> String {
     let mut out = String::new();
     let mut chars = sql.chars().peekable();
     let mut in_block_comment = false;
+    // Last two input characters outside comments/literals, for context checks.
+    let mut prev: Option<char> = None;
+    let mut prev2: Option<char> = None;
+    let is_ident = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '$');
 
     while let Some(ch) = chars.next() {
         if in_block_comment {
@@ -341,32 +380,51 @@ fn normalize_for_prefix(sql: &str) -> String {
         // String literals and quoted identifiers can contain `;`, `--`, `/*` or
         // keywords; replace their contents so they can't affect the checks.
         if ch == '\'' || ch == '"' {
-            skip_quoted(&mut chars, ch);
+            // E'...' strings use backslash escapes.
+            let backslash_escapes =
+                ch == '\'' && matches!(prev, Some('e' | 'E')) && !is_ident(prev2);
+            skip_quoted(&mut chars, ch, backslash_escapes);
             out.push(ch);
             out.push(ch);
+            prev2 = prev;
+            prev = Some(ch);
             continue;
         }
 
-        if ch == '$' {
+        // `$` inside an identifier (e.g. `a$b`) is not a dollar quote.
+        if ch == '$' && !is_ident(prev) {
             if let Some(tag) = dollar_quote_tag(&chars) {
                 for _ in 0..tag.chars().count() - 1 {
                     chars.next();
                 }
                 skip_dollar_quoted(&mut chars, &tag);
                 out.push_str("''");
+                prev2 = prev;
+                prev = Some('$');
                 continue;
             }
         }
 
         out.push(ch);
+        prev2 = prev;
+        prev = Some(ch);
     }
 
     format!(" {} ", out.trim().to_lowercase())
 }
 
-/// Consumes a quoted section up to its closing `quote` (doubled quotes escape).
-fn skip_quoted(chars: &mut std::iter::Peekable<std::str::Chars<'_>>, quote: char) {
+/// Consumes a quoted section up to its closing `quote` (doubled quotes escape;
+/// with `backslash_escapes`, `\\` escapes the next character as in `E'...'`).
+fn skip_quoted(
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    quote: char,
+    backslash_escapes: bool,
+) {
     while let Some(c) = chars.next() {
+        if backslash_escapes && c == '\\' {
+            chars.next();
+            continue;
+        }
         if c == quote {
             if chars.peek() == Some(&quote) {
                 chars.next();
@@ -806,5 +864,39 @@ mod tests {
         );
         // Positional parameters are not dollar quotes.
         assert_eq!(normalize_for_prefix("select $1"), " select $1 ");
+    }
+
+    #[test]
+    fn e_strings_with_backslash_escapes_keep_returning_visible() {
+        assert_eq!(
+            determine_query_mode(r"insert into t values (E'a\'b') returning id"),
+            QueryMode::ReturnsRows
+        );
+        let sql = r"select E'\'' into newtable from t";
+        assert_eq!(apply_select_limit(sql, Some(5)), sql);
+    }
+
+    #[test]
+    fn dollar_inside_identifier_is_not_a_quote() {
+        let sql = "select a$b$c from t; delete from x";
+        assert_eq!(apply_select_limit(sql, Some(5)), sql);
+    }
+
+    #[test]
+    fn utility_statements_are_reported_as_statements() {
+        for sql in [
+            "DO $$ begin perform 1; end $$",
+            "CALL refresh_stats()",
+            "SET search_path TO app",
+            "VACUUM ANALYZE users",
+            "BEGIN",
+        ] {
+            assert_eq!(determine_query_mode(sql), QueryMode::ExecuteOnly, "{sql}");
+        }
+        // A word that merely starts with a verb is not that verb.
+        assert_eq!(
+            determine_query_mode("settings_view"),
+            QueryMode::ReturnsRows
+        );
     }
 }

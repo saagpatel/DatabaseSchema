@@ -10,6 +10,7 @@ on:
 jobs:
   rust-checks:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: read
     defaults:
@@ -34,5 +35,5 @@ jobs:
         working-directory: .
         run: mkdir -p dist && touch dist/index.html
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked

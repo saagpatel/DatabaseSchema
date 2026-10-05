@@ -38,7 +38,7 @@
   "dependencies": {
     "@dagrejs/dagre": "^3.1.1",
     "@monaco-editor/react": "^4.7.0",
-    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/api": "^2.12.1",
     "@xyflow/react": "^12.12.0",
     "d3": "^7.9.0",
     "react": "^19.3.0",
@@ -51,12 +51,12 @@
     "@commitlint/cz-commitlint": "^21.2.3",
     "@lhci/cli": "^0.15.1",
     "@tailwindcss/vite": "^4.3.3",
-    "@tauri-apps/cli": "^2.11.5",
+    "@tauri-apps/cli": "^2.12.1",
     "@types/d3": "^7.4.3",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "@typescript-eslint/eslint-plugin": "^8.70.1",
-    "@typescript-eslint/parser": "^8.70.1",
+    "@typescript-eslint/eslint-plugin": "^8.71.0",
+    "@typescript-eslint/parser": "^8.71.0",
     "@vitejs/plugin-react": "^6.1.1",
     "commitizen": "^4.3.2",
     "eslint": "^8.57.1",
@@ -64,12 +64,12 @@
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^7.1.1",
     "husky": "^9.1.7",
-    "lint-staged": "^17.5.1",
+    "lint-staged": "^17.6.0",
     "monaco-editor": "^0.57.0",
     "prettier": "^3.9.9",
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.3",
-    "vite": "^8.3.1"
+    "vite": "^8.3.2"
   },
   "config": {
     "commitizen": {
